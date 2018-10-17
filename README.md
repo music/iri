@@ -6,7 +6,7 @@
 
 ## IOTA
 
-The IRI repository is the main IOTA Reference Implementation and the embodiment of the IOTA network specification. 
+The IRI repository is the main IOTA Reference Implementation and the embodiment of the IOTA network specification. This version of the IRI includes a scheme for imposing a total ordering on all transactions in the network, based on the [logical clock system](http://lamport.azurewebsites.net/pubs/time-clocks.pdf) outlined by Leslie Lamport, but adapted for a system in which events occur faster than the diffusion rate of the network.
 
 This is a full-featured [[IOTA]](https://iota.org/) node with a convenient JSON-REST HTTP interface.
 It allows users to become part of the [[IOTA]](https://iota.org) network as both a transaction relay
