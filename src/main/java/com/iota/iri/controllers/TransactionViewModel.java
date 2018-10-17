@@ -45,7 +45,7 @@ public class TransactionViewModel {
     private TransactionViewModel trunk;
     private TransactionViewModel branch;
     private final Hash hash;
-    private long LOGICAL_CLOCK_TIME = 0;
+    private long LOGICAL_CLOCK_TIME = 0;;
 
     public final static int GROUP = 0; // transactions GROUP means that's it's a non-leaf node (leafs store transaction value)
     public final static int PREFILLED_SLOT = 1; // means that we know only hash of the tx, the rest is unknown yet: only another tx references that hash
