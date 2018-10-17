@@ -1,11 +1,10 @@
 package com.iota.iri.controllers;
 
-import com.iota.iri.Milestone;
-import com.iota.iri.conf.Configuration;
+import com.iota.iri.conf.MainnetConfig;
+import com.iota.iri.conf.SnapshotConfig;
 import com.iota.iri.model.Hash;
 import com.iota.iri.storage.Tangle;
 import com.iota.iri.storage.rocksDB.RocksDBPersistenceProvider;
-import com.iota.iri.storage.rocksDB.RocksDBPersistenceProviderTest;
 import org.junit.*;
 import org.junit.rules.TemporaryFolder;
 
@@ -169,11 +168,13 @@ public class MilestoneViewModelTest {
 
     @Test
     public void nextGreaterThan() throws Exception {
-        int first = Milestone.MILESTONE_START_INDEX + 1;
+        int milestoneStartIndex = new MainnetConfig().getMilestoneStartIndex();
+        int first = milestoneStartIndex + 1;
         int next = first + 1;
         new MilestoneViewModel(next, new Hash("GBCDEBGHIJKLMNOPQRSTUVWXYZ9ABCDEFGHIJKLMNOPQRSTUVWXYZ9ABCDEFGHIJKLMNOPQRSTUV99999")).store(tangle);
         new MilestoneViewModel(first, new Hash("GBCDEFGHIJKLMNODQRSTUVWXYZ9ABCDEFGHIJKLMNOPQRSTUVWXYZ9ABCDEFGHIJKLMNOPQRSTUV99999")).store(tangle);
-        assertEquals(next, MilestoneViewModel.findClosestNextMilestone(tangle, first).index().intValue());
+        assertEquals(next, MilestoneViewModel.findClosestNextMilestone(
+                tangle, first, false, milestoneStartIndex).index().intValue());
     }
 
     @Test

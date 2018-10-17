@@ -1,15 +1,15 @@
 package com.iota.iri;
 
+import com.iota.iri.conf.SnapshotConfig;
 import com.iota.iri.controllers.TipsViewModel;
+import com.iota.iri.controllers.TransactionViewModel;
 import com.iota.iri.hash.Curl;
 import com.iota.iri.hash.Sponge;
 import com.iota.iri.hash.SpongeFactory;
-import com.iota.iri.network.TransactionRequester;
-import com.iota.iri.controllers.TransactionViewModel;
 import com.iota.iri.model.Hash;
-import com.iota.iri.zmq.MessageQ;
+import com.iota.iri.network.TransactionRequester;
 import com.iota.iri.storage.Tangle;
-
+import com.iota.iri.zmq.MessageQ;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -29,8 +29,8 @@ public class TransactionValidator {
     private final TransactionRequester transactionRequester;
     private final MessageQ messageQ;
     private int MIN_WEIGHT_MAGNITUDE = 81;
-    private static long MIN_TIMESTAMP = 1517180400;
-    private static long MIN_TIMESTAMP_MS = MIN_TIMESTAMP * 1000;
+    private static long snapshotTimestamp;
+    private static long snapshotTimestampMs;
     private static long MAX_TIMESTAMP_FUTURE = 2 * 60 * 60;
     private static long MAX_TIMESTAMP_FUTURE_MS = MAX_TIMESTAMP_FUTURE * 1000;
 
@@ -42,26 +42,30 @@ public class TransactionValidator {
     private final Set<Hash> newSolidTransactionsOne = new LinkedHashSet<>();
     private final Set<Hash> newSolidTransactionsTwo = new LinkedHashSet<>();
 
-    public TransactionValidator(Tangle tangle, TipsViewModel tipsViewModel, TransactionRequester transactionRequester, MessageQ messageQ) {
+    public TransactionValidator(Tangle tangle, TipsViewModel tipsViewModel, TransactionRequester transactionRequester,
+                                MessageQ messageQ, SnapshotConfig config) {
         this.tangle = tangle;
         this.tipsViewModel = tipsViewModel;
         this.transactionRequester = transactionRequester;
         this.messageQ = messageQ;
+        TransactionValidator.snapshotTimestamp = config.getSnapshotTime();
+        TransactionValidator.snapshotTimestampMs = snapshotTimestamp * 1000;
     }
 
-    public void init(boolean testnet,int MAINNET_MWM, int TESTNET_MWM) {
-        if(testnet) {
-            MIN_WEIGHT_MAGNITUDE = TESTNET_MWM;
-        } else {
-            MIN_WEIGHT_MAGNITUDE = MAINNET_MWM;
-        }
-        //lowest allowed MWM encoded in 46 bytes.
-        if (MIN_WEIGHT_MAGNITUDE<13){
-            MIN_WEIGHT_MAGNITUDE = 13;
-        }
+    public void init(boolean testnet, int mwm) {
+        setMwm(testnet, mwm);
 
         newSolidThread = new Thread(spawnSolidTransactionsPropagation(), "Solid TX cascader");
         newSolidThread.start();
+    }
+
+    void setMwm(boolean testnet, int mwm) {
+        MIN_WEIGHT_MAGNITUDE = mwm;
+
+        //lowest allowed MWM encoded in 46 bytes.
+        if (!testnet){
+            MIN_WEIGHT_MAGNITUDE = Math.max(MIN_WEIGHT_MAGNITUDE, 13);
+        }
     }
 
     public void shutdown() throws InterruptedException {
@@ -73,16 +77,16 @@ public class TransactionValidator {
         return MIN_WEIGHT_MAGNITUDE;
     }
 
-    private static boolean hasInvalidTimestamp(TransactionViewModel transactionViewModel) {
+    private boolean hasInvalidTimestamp(TransactionViewModel transactionViewModel) {
         if (transactionViewModel.getAttachmentTimestamp() == 0) {
-            return transactionViewModel.getTimestamp() < MIN_TIMESTAMP && !Objects.equals(transactionViewModel.getHash(), Hash.NULL_HASH)
+            return transactionViewModel.getTimestamp() < snapshotTimestamp && !Objects.equals(transactionViewModel.getHash(), Hash.NULL_HASH)
                     || transactionViewModel.getTimestamp() > (System.currentTimeMillis() / 1000) + MAX_TIMESTAMP_FUTURE;
         }
-        return transactionViewModel.getAttachmentTimestamp() < MIN_TIMESTAMP_MS
+        return transactionViewModel.getAttachmentTimestamp() < snapshotTimestampMs
                 || transactionViewModel.getAttachmentTimestamp() > System.currentTimeMillis() + MAX_TIMESTAMP_FUTURE_MS;
     }
 
-    public static void runValidation(TransactionViewModel transactionViewModel, final int minWeightMagnitude) {
+    public void runValidation(TransactionViewModel transactionViewModel, final int minWeightMagnitude) {
         transactionViewModel.setMetadata();
         transactionViewModel.setAttachmentData();
         if(hasInvalidTimestamp(transactionViewModel)) {
@@ -104,17 +108,17 @@ public class TransactionValidator {
         }
     }
 
-    public static TransactionViewModel validate(final int[] trits, int minWeightMagnitude) {
+    public TransactionViewModel validateTrits(final byte[] trits, int minWeightMagnitude) {
         TransactionViewModel transactionViewModel = new TransactionViewModel(trits, Hash.calculate(trits, 0, trits.length, SpongeFactory.create(SpongeFactory.Mode.CURLP81)));
         runValidation(transactionViewModel, minWeightMagnitude);
         return transactionViewModel;
     }
-    public static TransactionViewModel validate(final byte[] bytes, int minWeightMagnitude) {
-        return validate(bytes, minWeightMagnitude, SpongeFactory.create(SpongeFactory.Mode.CURLP81));
 
+    public TransactionViewModel validateBytes(final byte[] bytes, int minWeightMagnitude) {
+        return validateBytes(bytes, minWeightMagnitude, SpongeFactory.create(SpongeFactory.Mode.CURLP81));
     }
 
-    public static TransactionViewModel validate(final byte[] bytes, int minWeightMagnitude, Sponge curl) {
+    public TransactionViewModel validateBytes(final byte[] bytes, int minWeightMagnitude, Sponge curl) {
         TransactionViewModel transactionViewModel = new TransactionViewModel(bytes, Hash.calculate(bytes, TransactionViewModel.TRINARY_SIZE, curl));
         runValidation(transactionViewModel, minWeightMagnitude);
         return transactionViewModel;
@@ -167,44 +171,7 @@ public class TransactionValidator {
     private Runnable spawnSolidTransactionsPropagation() {
         return () -> {
             while(!shuttingDown.get()) {
-                Set<Hash> newSolidHashes = new HashSet<>();
-                useFirst.set(!useFirst.get());
-                synchronized (cascadeSync) {
-                    if (useFirst.get()) {
-                        newSolidHashes.addAll(newSolidTransactionsTwo);
-                    } else {
-                        newSolidHashes.addAll(newSolidTransactionsOne);
-                    }
-                }
-                Iterator<Hash> cascadeIterator = newSolidHashes.iterator();
-                Set<Hash> hashesToCascade = new HashSet<>();
-                while(cascadeIterator.hasNext() && !shuttingDown.get()) {
-                    try {
-                        Hash hash = cascadeIterator.next();
-                        TransactionViewModel transaction = TransactionViewModel.fromHash(tangle, hash);
-                        Set<Hash> approvers = transaction.getApprovers(tangle).getHashes();
-                        for(Hash h: approvers) {
-                            TransactionViewModel tx = TransactionViewModel.fromHash(tangle, h);
-                            if(quietQuickSetSolid(tx)) {
-                                    tx.update(tangle, "solid");
-                            } else {
-                                if (transaction.isSolid()) {
-                                    addSolidTransaction(hash);
-                                }
-                            }
-                        }
-                    } catch (Exception e) {
-                        log.error("Some error", e);
-                        // TODO: Do something, maybe, or do nothing.
-                    }
-                }
-                synchronized (cascadeSync) {
-                    if (useFirst.get()) {
-                        newSolidTransactionsTwo.clear();
-                    } else {
-                        newSolidTransactionsOne.clear();
-                    }
-                }
+                propagateSolidTransactions();
                 try {
                     Thread.sleep(500);
                 } catch (InterruptedException e) {
@@ -212,6 +179,39 @@ public class TransactionValidator {
                 }
             }
         };
+    }
+
+    void propagateSolidTransactions() {
+        Set<Hash> newSolidHashes = new HashSet<>();
+        useFirst.set(!useFirst.get());
+        //synchronized to make sure no one is changing the newSolidTransactions collections during addAll
+        synchronized (cascadeSync) {
+            if (useFirst.get()) {
+                newSolidHashes.addAll(newSolidTransactionsTwo);
+                newSolidTransactionsTwo.clear();
+            } else {
+                newSolidHashes.addAll(newSolidTransactionsOne);
+                newSolidTransactionsOne.clear();
+            }
+        }
+        Iterator<Hash> cascadeIterator = newSolidHashes.iterator();
+        while(cascadeIterator.hasNext() && !shuttingDown.get()) {
+            try {
+                Hash hash = cascadeIterator.next();
+                TransactionViewModel transaction = TransactionViewModel.fromHash(tangle, hash);
+                Set<Hash> approvers = transaction.getApprovers(tangle).getHashes();
+                for(Hash h: approvers) {
+                    TransactionViewModel tx = TransactionViewModel.fromHash(tangle, h);
+                    if(quietQuickSetSolid(tx)) {
+                        tx.update(tangle, "solid|height");
+                        tipsViewModel.setSolid(h);
+                        addSolidTransaction(h);
+                    }
+                }
+            } catch (Exception e) {
+                log.error("Error while propagating solidity upwards", e);
+            }
+        }
     }
 
     public void updateStatus(TransactionViewModel transactionViewModel) throws Exception {
@@ -223,6 +223,8 @@ public class TransactionValidator {
         tipsViewModel.removeTipHash(transactionViewModel.getBranchTransactionHash());
 
         if(quickSetSolid(transactionViewModel)) {
+            transactionViewModel.update(tangle, "solid|height");
+            tipsViewModel.setSolid(transactionViewModel.getHash());
             addSolidTransaction(transactionViewModel.getHash());
         }
     }
@@ -264,6 +266,11 @@ public class TransactionValidator {
             return true;
         }
         return approovee.isSolid();
+    }
+
+    //for testing
+    boolean isNewSolidTxSetsEmpty () {
+        return newSolidTransactionsOne.isEmpty() && newSolidTransactionsTwo.isEmpty();
     }
 
     public static class StaleTimestampException extends RuntimeException {

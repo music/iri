@@ -1,7 +1,5 @@
 package com.iota.iri.controllers;
 
-import java.util.*;
-
 import com.iota.iri.model.*;
 import com.iota.iri.storage.Indexable;
 import com.iota.iri.storage.Persistable;
@@ -9,12 +7,14 @@ import com.iota.iri.storage.Tangle;
 import com.iota.iri.utils.Converter;
 import com.iota.iri.utils.Pair;
 
+import java.util.*;
+
 public class TransactionViewModel {
 
     private final com.iota.iri.model.Transaction transaction;
 
     public static final int SIZE = 1604;
-    private static final int TAG_SIZE = 27;
+    private static final int TAG_SIZE_IN_BYTES = 17; // = ceil(81 TRITS / 5 TRITS_PER_BYTE)
 
     public static final long SUPPLY = 2779530283277761L; // = (3^33 - 1) / 2
 
@@ -36,6 +36,7 @@ public class TransactionViewModel {
     private static final int NONCE_TRINARY_OFFSET = ATTACHMENT_TIMESTAMP_UPPER_BOUND_TRINARY_OFFSET + ATTACHMENT_TIMESTAMP_UPPER_BOUND_TRINARY_SIZE, NONCE_TRINARY_SIZE = 81;
 
     public static final int TRINARY_SIZE = NONCE_TRINARY_OFFSET + NONCE_TRINARY_SIZE;
+    public static final int TRYTES_SIZE = TRINARY_SIZE / 3;
 
     public static final int ESSENCE_TRINARY_OFFSET = ADDRESS_TRINARY_OFFSET, ESSENCE_TRINARY_SIZE = ADDRESS_TRINARY_SIZE + VALUE_TRINARY_SIZE + OBSOLETE_TAG_TRINARY_SIZE + TIMESTAMP_TRINARY_SIZE + CURRENT_INDEX_TRINARY_SIZE + LAST_INDEX_TRINARY_SIZE;
 
@@ -50,29 +51,31 @@ public class TransactionViewModel {
     public final static int PREFILLED_SLOT = 1; // means that we know only hash of the tx, the rest is unknown yet: only another tx references that hash
     public final static int FILLED_SLOT = -1; //  knows the hash only coz another tx references that hash
 
-    private int[] trits;
+    private byte[] trits;
     public int weightMagnitude;
 
-    public static void fillMetadata(final Tangle tangle, TransactionViewModel transactionViewModel) throws Exception {
-        if (transactionViewModel.getHash().equals(Hash.NULL_HASH)) { return; }
+    public static void fillMetadata(Tangle tangle, TransactionViewModel transactionViewModel) throws Exception {
+        if (Hash.NULL_HASH.equals(transactionViewModel.getHash())) {
+            return;
+        }
         if(transactionViewModel.getType() == FILLED_SLOT && !transactionViewModel.transaction.parsed) {
             tangle.saveBatch(transactionViewModel.getMetadataSaveBatch());
         }
     }
 
-    public static TransactionViewModel find(final Tangle tangle, byte[] hash) throws Exception {
+    public static TransactionViewModel find(Tangle tangle, byte[] hash) throws Exception {
         TransactionViewModel transactionViewModel = new TransactionViewModel((Transaction) tangle.find(Transaction.class, hash), new Hash(hash));
         fillMetadata(tangle, transactionViewModel);
         return transactionViewModel;
     }
 
-    public static TransactionViewModel fromHash(final Tangle tangle, final Hash hash) throws Exception {
+    public static TransactionViewModel fromHash(Tangle tangle, final Hash hash) throws Exception {
         TransactionViewModel transactionViewModel = new TransactionViewModel((Transaction) tangle.load(Transaction.class, hash), hash);
         fillMetadata(tangle, transactionViewModel);
         return transactionViewModel;
     }
 
-    public static boolean mightExist(final Tangle tangle, Hash hash) throws Exception {
+    public static boolean mightExist(Tangle tangle, Hash hash) throws Exception {
         return tangle.maybeHas(Transaction.class, hash);
     }
 
@@ -82,35 +85,35 @@ public class TransactionViewModel {
         weightMagnitude = this.hash.trailingZeros();
     }
 
-    public TransactionViewModel(final int[] trits, Hash hash) {
-        transaction = new com.iota.iri.model.Transaction();
-        this.trits = new int[trits.length];
-        System.arraycopy(trits, 0, this.trits, 0, trits.length);
-        transaction.bytes = Converter.allocateBytesForTrits(trits.length);
-        Converter.bytes(trits, 0, transaction.bytes, 0, trits.length);
-        this.hash = hash;
+    public TransactionViewModel(final byte[] trits, Hash hash) {
+        if(trits.length == 8019) {
+            transaction = new com.iota.iri.model.Transaction();
+            this.trits = new byte[trits.length];
+            System.arraycopy(trits, 0, this.trits, 0, trits.length);
+            transaction.bytes = Converter.allocateBytesForTrits(trits.length);
+            Converter.bytes(trits, 0, transaction.bytes, 0, trits.length);
+            this.hash = hash;
 
-        transaction.type = FILLED_SLOT;
-
-        weightMagnitude = this.hash.trailingZeros();
-        transaction.validity = 0;
-        transaction.arrivalTime = 0;
+            transaction.type = FILLED_SLOT;
+            weightMagnitude = this.hash.trailingZeros();
+            transaction.validity = 0;
+            transaction.arrivalTime = 0;
+        }
+        else {
+            transaction = new Transaction();
+            transaction.bytes = new byte[SIZE];
+            System.arraycopy(trits, 0, transaction.bytes, 0, SIZE);
+            this.hash = hash;
+            weightMagnitude = this.hash.trailingZeros();
+            transaction.type = FILLED_SLOT;
+        }
     }
 
-    public TransactionViewModel(final byte[] bytes, Hash hash) throws RuntimeException {
-        transaction = new Transaction();
-        transaction.bytes = new byte[SIZE];
-        System.arraycopy(bytes, 0, transaction.bytes, 0, SIZE);
-        this.hash = hash;
-        weightMagnitude = this.hash.trailingZeros();
-        transaction.type = FILLED_SLOT;
-    }
-
-    public static int getNumberOfStoredTransactions(final Tangle tangle) throws Exception {
+    public static int getNumberOfStoredTransactions(Tangle tangle) throws Exception {
         return tangle.getCount(Transaction.class).intValue();
     }
 
-    public boolean update(final Tangle tangle, String item) throws Exception {
+    public boolean update(Tangle tangle, String item) throws Exception {
         getAddressHash();
         getTrunkTransactionHash();
         getBranchTransactionHash();
@@ -125,30 +128,30 @@ public class TransactionViewModel {
         return tangle.update(transaction, hash, item);
     }
 
-    public TransactionViewModel getBranchTransaction(final Tangle tangle) throws Exception {
+    public TransactionViewModel getBranchTransaction(Tangle tangle) throws Exception {
         if(branch == null) {
             branch = TransactionViewModel.fromHash(tangle, getBranchTransactionHash());
         }
         return branch;
     }
 
-    public TransactionViewModel getTrunkTransaction(final Tangle tangle) throws Exception {
+    public TransactionViewModel getTrunkTransaction(Tangle tangle) throws Exception {
         if(trunk == null) {
             trunk = TransactionViewModel.fromHash(tangle, getTrunkTransactionHash());
         }
         return trunk;
     }
 
-    public static int[] trits(byte[] transactionBytes) {
-        int[] trits;
-        trits = new int[TRINARY_SIZE];
+    public static byte[] trits(byte[] transactionBytes) {
+        byte[] trits;
+        trits = new byte[TRINARY_SIZE];
         if(transactionBytes != null) {
             Converter.getTrits(transactionBytes, trits);
         }
         return trits;
     }
 
-    public synchronized int[] trits() {
+    public synchronized byte[] trits() {
         return (trits == null) ? (trits = trits(transaction.bytes)) : trits;
     }
 
@@ -162,7 +165,8 @@ public class TransactionViewModel {
         hashesList.add(new Pair<>(getBundleHash(), new Bundle(hash)));
         hashesList.add(new Pair<>(getBranchTransactionHash(), new Approvee(hash)));
         hashesList.add(new Pair<>(getTrunkTransactionHash(), new Approvee(hash)));
-        hashesList.add(new Pair<>(getObsoleteTagValue(), new Tag(hash)));
+        hashesList.add(new Pair<>(getObsoleteTagValue(), new ObsoleteTag(hash)));
+        hashesList.add(new Pair<>(getTagValue(), new Tag(hash)));
         setAttachmentData();
         setMetadata();
         return hashesList;
@@ -261,7 +265,7 @@ public class TransactionViewModel {
             byte[] tagBytes = Converter.allocateBytesForTrits(OBSOLETE_TAG_TRINARY_SIZE);
             Converter.bytes(trits(), OBSOLETE_TAG_TRINARY_OFFSET, tagBytes, 0, OBSOLETE_TAG_TRINARY_SIZE);
 
-            transaction.obsoleteTag = new Hash(tagBytes, 0, TAG_SIZE);
+            transaction.obsoleteTag = new Hash(tagBytes, 0, TAG_SIZE_IN_BYTES);
         }
         return transaction.obsoleteTag;
     }
@@ -291,7 +295,7 @@ public class TransactionViewModel {
         if(transaction.tag == null) {
             byte[] tagBytes = Converter.allocateBytesForTrits(TAG_TRINARY_SIZE);
             Converter.bytes(trits(), TAG_TRINARY_OFFSET, tagBytes, 0, TAG_TRINARY_SIZE);
-            transaction.tag = new Hash(tagBytes, 0, TAG_SIZE);
+            transaction.tag = new Hash(tagBytes, 0, TAG_SIZE_IN_BYTES);
         }
         return transaction.tag;
     }
@@ -309,9 +313,11 @@ public class TransactionViewModel {
         return transaction.value;
     }
 
-    public void setValidity(final Tangle tangle, int validity) throws Exception {
-        transaction.validity = validity;
-        update(tangle, "validity");
+    public void setValidity(Tangle tangle, int validity) throws Exception {
+        if(transaction.validity != validity) {
+            transaction.validity = validity;
+            update(tangle, "validity");
+        }
     }
 
     public int getValidity() {
@@ -322,7 +328,7 @@ public class TransactionViewModel {
         return transaction.currentIndex;
     }
 
-    public int[] getSignature() {
+    public byte[] getSignature() {
         return Arrays.copyOfRange(trits(), SIGNATURE_MESSAGE_FRAGMENT_TRINARY_OFFSET, SIGNATURE_MESSAGE_FRAGMENT_TRINARY_SIZE);
     }
 
@@ -364,14 +370,18 @@ public class TransactionViewModel {
         return tangle.keysWithMissingReferences(Approvee.class, Transaction.class);
     }
 
-    public static void updateSolidTransactions(final Tangle tangle, final Set<Hash> analyzedHashes) throws Exception {
+    public static void updateSolidTransactions(Tangle tangle, final Set<Hash> analyzedHashes) throws Exception {
         Iterator<Hash> hashIterator = analyzedHashes.iterator();
         TransactionViewModel transactionViewModel;
         while(hashIterator.hasNext()) {
             transactionViewModel = TransactionViewModel.fromHash(tangle, hashIterator.next());
+
             transactionViewModel.updateHeights(tangle);
-            transactionViewModel.updateSolid(true);
-            transactionViewModel.update(tangle, "solid|height");
+
+            if(!transactionViewModel.isSolid()) {
+                transactionViewModel.updateSolid(true);
+                transactionViewModel.update(tangle, "solid|height");
+            }
         }
     }
 
@@ -391,7 +401,7 @@ public class TransactionViewModel {
         return transaction.snapshot;
     }
 
-    public void setSnapshot(final Tangle tangle, final int index) throws Exception {
+    public void setSnapshot(Tangle tangle, final int index) throws Exception {
         if ( index != transaction.snapshot ) {
             transaction.snapshot = index;
             update(tangle, "snapshot");
@@ -406,7 +416,7 @@ public class TransactionViewModel {
         transaction.height = height;
     }
 
-    public void updateHeights(final Tangle tangle) throws Exception {
+    public void updateHeights(Tangle tangle) throws Exception {
         TransactionViewModel transactionVM = this, trunk = this.getTrunkTransaction(tangle);
         Stack<Hash> transactionViewModels = new Stack<>();
         transactionViewModels.push(transactionVM.getHash());
@@ -417,12 +427,19 @@ public class TransactionViewModel {
         }
         while(transactionViewModels.size() != 0) {
             transactionVM = TransactionViewModel.fromHash(tangle, transactionViewModels.pop());
-            if(trunk.getHash().equals(Hash.NULL_HASH) && trunk.getHeight() == 0 && !transactionVM.getHash().equals(Hash.NULL_HASH)) {
-                transactionVM.updateHeight(1L);
-                transactionVM.update(tangle, "height");
+            long currentHeight = transactionVM.getHeight();
+            if(Hash.NULL_HASH.equals(trunk.getHash()) && trunk.getHeight() == 0
+                    && !Hash.NULL_HASH.equals(transactionVM.getHash())) {
+                if(currentHeight != 1L ){
+                    transactionVM.updateHeight(1L);
+                    transactionVM.update(tangle, "height");
+                }
             } else if ( trunk.getType() != PREFILLED_SLOT && transactionVM.getHeight() == 0){
-                transactionVM.updateHeight(1 + trunk.getHeight());
-                transactionVM.update(tangle, "height");
+                long newHeight = 1L + trunk.getHeight();
+                if(currentHeight != newHeight) {
+                    transactionVM.updateHeight(newHeight);
+                    transactionVM.update(tangle, "height");
+                }
             } else {
                 break;
             }
@@ -443,5 +460,21 @@ public class TransactionViewModel {
 
     public long getLogicalClockTime() {
         return LOGICAL_CLOCK_TIME;
+
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (o == null || getClass() != o.getClass()) {
+            return false;
+        }
+        TransactionViewModel other = (TransactionViewModel) o;
+        return Objects.equals(getHash(), other.getHash());
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(getHash());
     }
 }

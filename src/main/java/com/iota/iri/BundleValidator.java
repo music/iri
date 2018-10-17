@@ -14,7 +14,9 @@ public class BundleValidator {
     public static List<List<TransactionViewModel>> validate(Tangle tangle, Hash tailHash) throws Exception {
         TransactionViewModel tail = TransactionViewModel.fromHash(tangle, tailHash);
         List<List<TransactionViewModel>> transactions = new LinkedList<>();
-        if(tail.getCurrentIndex() != 0) return transactions;
+        if (tail.getCurrentIndex() != 0) {
+            return transactions;
+        }
         final Map<Hash, TransactionViewModel> bundleTransactions = loadTransactionsFromTangle(tangle, tail);
 
         for (TransactionViewModel transactionViewModel : bundleTransactions.values()) {
@@ -29,10 +31,10 @@ public class BundleValidator {
                 final Sponge curlInstance = SpongeFactory.create(SpongeFactory.Mode.KERL);
                 final Sponge addressInstance = SpongeFactory.create(SpongeFactory.Mode.KERL);
 
-                final int[] addressTrits = new int[TransactionViewModel.ADDRESS_TRINARY_SIZE];
-                final int[] bundleHashTrits = new int[TransactionViewModel.BUNDLE_TRINARY_SIZE];
-                final int[] normalizedBundle = new int[Curl.HASH_LENGTH / ISS.TRYTE_WIDTH];
-                final int[] digestTrits = new int[Curl.HASH_LENGTH];
+                final byte[] addressTrits = new byte[TransactionViewModel.ADDRESS_TRINARY_SIZE];
+                final byte[] bundleHashTrits = new byte[TransactionViewModel.BUNDLE_TRINARY_SIZE];
+                final byte[] normalizedBundle = new byte[Curl.HASH_LENGTH / ISS.TRYTE_WIDTH];
+                final byte[] digestTrits = new byte[Curl.HASH_LENGTH];
 
                 MAIN_LOOP:
                 while (true) {
