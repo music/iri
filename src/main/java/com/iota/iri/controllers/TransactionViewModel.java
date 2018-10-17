@@ -39,13 +39,12 @@ public class TransactionViewModel {
 
     public static final int ESSENCE_TRINARY_OFFSET = ADDRESS_TRINARY_OFFSET, ESSENCE_TRINARY_SIZE = ADDRESS_TRINARY_SIZE + VALUE_TRINARY_SIZE + OBSOLETE_TAG_TRINARY_SIZE + TIMESTAMP_TRINARY_SIZE + CURRENT_INDEX_TRINARY_SIZE + LAST_INDEX_TRINARY_SIZE;
 
-
     private AddressViewModel address;
     private ApproveeViewModel approovers;
     private TransactionViewModel trunk;
     private TransactionViewModel branch;
     private final Hash hash;
-
+    private long LOGICAL_CLOCK_TIME = 0;
 
     public final static int GROUP = 0; // transactions GROUP means that's it's a non-leaf node (leafs store transaction value)
     public final static int PREFILLED_SLOT = 1; // means that we know only hash of the tx, the rest is unknown yet: only another tx references that hash
@@ -97,7 +96,6 @@ public class TransactionViewModel {
         transaction.validity = 0;
         transaction.arrivalTime = 0;
     }
-
 
     public TransactionViewModel(final byte[] bytes, Hash hash) throws RuntimeException {
         transaction = new Transaction();
@@ -437,5 +435,13 @@ public class TransactionViewModel {
     }
     public String getSender() {
         return transaction.sender;
+    }
+
+    public void setLogicalClockTime(long clock_time) {
+        LOGICAL_CLOCK_TIME = clock_time;
+    }
+
+    public long getLogicalClockTime() {
+        return LOGICAL_CLOCK_TIME;
     }
 }

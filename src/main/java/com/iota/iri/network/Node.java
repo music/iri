@@ -33,17 +33,20 @@ public class Node {
     private static final Logger log = LoggerFactory.getLogger(Node.class);
 
 
-    public static final int TRANSACTION_PACKET_SIZE = 1650;
+    public static final int TRANSACTION_PACKET_SIZE = 1658;
     private int BROADCAST_QUEUE_SIZE;
     private int RECV_QUEUE_SIZE;
     private int REPLY_QUEUE_SIZE;
     private static final int PAUSE_BETWEEN_TRANSACTIONS = 1;
     public static final int REQUEST_HASH_SIZE = 46;
     private static double P_SELECT_MILESTONE;
+    private long LOGICAL_CLOCK_TIME = 1L;
+    private static final int LONG_BYTES_SIZE = 8;
 
     private final AtomicBoolean shuttingDown = new AtomicBoolean(false);
 
     private final List<Neighbor> neighbors = new CopyOnWriteArrayList<>();
+    private final List<Pair<Long, Hash>> transactions = new ArrayList<Pair<Long, Hash>>();
     private final ConcurrentSkipListSet<TransactionViewModel> broadcastQueue = weightQueue();
     private final ConcurrentSkipListSet<Pair<TransactionViewModel, Neighbor>> receiveQueue = weightQueueTxPair();
     private final ConcurrentSkipListSet<Pair<Hash, Neighbor>> replyQueue = weightQueueHashPair();
@@ -231,7 +234,7 @@ public class Node {
                 //Validate transaction
                 neighbor.incAllTransactions();
                 if (rnd.nextDouble() < P_DROP_TRANSACTION) {
-                    //log.info("Randomly dropping transaction. Stand by... ");
+                    log.info("Randomly dropping transaction. Stand by... ");
                     break;
                 }
                 try {
@@ -249,7 +252,21 @@ public class Node {
 
                     if (!cached) {
                         //if not, then validate
-                        receivedTransactionViewModel = new TransactionViewModel(receivedData, Hash.calculate(receivedData, TransactionViewModel.TRINARY_SIZE, SpongeFactory.create(SpongeFactory.Mode.CURLP81)));
+                        receivedTransactionViewModel = new TransactionViewModel(receivedData, Hash.calculate(receivedData,
+                                TransactionViewModel.TRINARY_SIZE, SpongeFactory.create(SpongeFactory.Mode.CURLP81)));
+                        byte[] logicalClockBytes = Arrays.copyOfRange(receivedData, TransactionViewModel.SIZE + REQUEST_HASH_SIZE, receivedData.length);
+                        long logicalClockTime = bytesToLong(logicalClockBytes);
+                        // log.info("preProcessReceivedData - Logical Clock bytes are: " + Arrays.toString(logicalClockBytes) + ". Setting " +
+                        //     "receivedTransactionViewModel logical clock to " + LOGICAL_CLOCK_TIME + " if it is new. Otherwise setting it to " + logicalClockTime);
+                        synchronized (receivedTransactionViewModel) {
+                            if (logicalClockTime == 0) {
+                                // log.info("preProcessReceivedData - receivedData is new! Setting receivedTransactionViewModel logical clock to: " + LOGICAL_CLOCK_TIME);
+                                receivedTransactionViewModel.setLogicalClockTime(LOGICAL_CLOCK_TIME);
+                            } else {
+                                // log.info("preProcessReceivedData - receivedData is not new. Setting receivedTransactionViewModel logical clock to " + logicalClockTime);
+                                receivedTransactionViewModel.setLogicalClockTime(logicalClockTime);
+                            }
+                        }
                         receivedTransactionHash = receivedTransactionViewModel.getHash();
                         TransactionValidator.runValidation(receivedTransactionViewModel, transactionValidator.getMinWeightMagnitude());
 
@@ -388,6 +405,14 @@ public class Node {
         //if new, then broadcast to all neighbors
         if (stored) {
             receivedTransactionViewModel.setArrivalTime(System.currentTimeMillis());
+            // Set the logical clock to be later than the timestamp of the received message
+            // log.info("processReceivedData - Received Transaction from " + neighbor.getPort() + ". Transaction's logical clock data was: " + 
+            //         receivedTransactionViewModel.getLogicalClockTime() + ". My logical clock is currently: " +
+            //         LOGICAL_CLOCK_TIME + ". Transaction's hash was: " + receivedTransactionViewModel.getHash().toString().substring(0, 10));
+            if (LOGICAL_CLOCK_TIME <= receivedTransactionViewModel.getLogicalClockTime()) {
+                LOGICAL_CLOCK_TIME = receivedTransactionViewModel.getLogicalClockTime() + 1L;
+                // log.info("processReceivedData - Setting my logical clock to be: " + LOGICAL_CLOCK_TIME);
+            }
             try {
                 transactionValidator.updateStatus(receivedTransactionViewModel);
                 receivedTransactionViewModel.updateSender(neighbor.getAddress().toString());
@@ -396,13 +421,25 @@ public class Node {
                 log.error("Error updating transactions.", e);
             }
             neighbor.incNewTransactions();
+            // set the receivedTransactionViewModel's logical clock data to our clock data before
+            // forwarding that to our neighbors if it's a new transaction
+            if (receivedTransactionViewModel.getLogicalClockTime() == 0) {
+                // log.info("processReceivedData - received new transaction from " + neighbor.getPort() + "with hash " + 
+                //     receivedTransactionViewModel.getHash().toString().substring(0, 10) + "! Setting its logical clock to: " + LOGICAL_CLOCK_TIME);
+                receivedTransactionViewModel.setLogicalClockTime(LOGICAL_CLOCK_TIME);
+            }
+            // log.info("processReceivedData - adding transaction with hash " + receivedTransactionViewModel.getHash());
+            synchronized (transactions) {
+                transactions.add(new ImmutablePair<>(receivedTransactionViewModel.getLogicalClockTime(), receivedTransactionViewModel.getHash()));
+            }
             broadcast(receivedTransactionViewModel);
+
+            printTransactionOrdering();
         }
 
     }
 
     public void replyToRequest(Hash requestedHash, Neighbor neighbor) {
-
         TransactionViewModel transactionViewModel = null;
         Hash transactionPointer;
 
@@ -414,6 +451,13 @@ public class Node {
                     neighbor.incRandomTransactionRequests();
                     transactionPointer = getRandomTipPointer();
                     transactionViewModel = TransactionViewModel.fromHash(tangle, transactionPointer);
+                    if (containsTransaction(transactionPointer)) {
+                        transactionViewModel.setLogicalClockTime(getLogicalClockTime(transactionPointer));
+                    }
+                    // } else {
+                    //     log.info("replyToRequest - did not contain transaction with hash " +
+                    //             transactionViewModel.getHash().toString().substring(0, 10));
+                    // }
                 } else {
                     //no tx to request, so no random tip will be sent as a reply.
                     return;
@@ -424,8 +468,17 @@ public class Node {
         } else {
             //find requested trytes
             try {
-                //transactionViewModel = TransactionViewModel.find(Arrays.copyOf(requestedHash.bytes(), TransactionRequester.REQUEST_HASH_SIZE));
-                transactionViewModel = TransactionViewModel.fromHash(tangle, new Hash(requestedHash.bytes(), 0, TransactionRequester.REQUEST_HASH_SIZE));
+                //transactionViewModel = TransactionViewModel.find(Arrays.copyOf(requestedHash.bytes(),
+                        //TransactionRequester.REQUEST_HASH_SIZE));
+                Hash hash = new Hash(requestedHash.bytes(), 0, TransactionRequester.REQUEST_HASH_SIZE);
+                transactionViewModel = TransactionViewModel.fromHash(tangle, hash);
+                if (containsTransaction(transactionViewModel.getHash())) {
+                    transactionViewModel.setLogicalClockTime(getLogicalClockTime(hash));
+                }
+                // } else {
+                //     log.info("replyToRequest - did not contain transaction with hash " +
+                //             transactionViewModel.getHash().toString().substring(0, 10));
+                // }
                 //log.debug("Requested Hash: " + requestedHash + " \nFound: " + transactionViewModel.getHash());
             } catch (Exception e) {
                 log.error("Error while searching for transaction.", e);
@@ -435,7 +488,10 @@ public class Node {
         if (transactionViewModel != null && transactionViewModel.getType() == TransactionViewModel.FILLED_SLOT) {
             //send trytes back to neighbor
             try {
+                // log.info("replyToRequest - Assembled transactionViewModel successfully. Set its logical clock time to be: " +
+                //         transactionViewModel.getLogicalClockTime());
                 sendPacket(sendingPacket, transactionViewModel, neighbor);
+                LOGICAL_CLOCK_TIME += 1L;
 
             } catch (Exception e) {
                 log.error("Error fetching transaction to request.", e);
@@ -446,7 +502,6 @@ public class Node {
                 //request is an actual transaction and missing in request queue add it.
                 try {
                     transactionRequester.requestTransaction(requestedHash, false);
-
                 } catch (Exception e) {
                     log.error("Error adding transaction to request.", e);
                 }
@@ -476,15 +531,74 @@ public class Node {
             return;
         }
 
-        synchronized (sendingPacket) {
-            System.arraycopy(transactionViewModel.getBytes(), 0, sendingPacket.getData(), 0, TransactionViewModel.SIZE);
-            Hash hash = transactionRequester.transactionToRequest(rnd.nextDouble() < P_SELECT_MILESTONE);
-            System.arraycopy(hash != null ? hash.bytes() : transactionViewModel.getHash().bytes(), 0,
-                    sendingPacket.getData(), TransactionViewModel.SIZE, REQUEST_HASH_SIZE);
-            neighbor.send(sendingPacket);
-        }
+        synchronized (transactionViewModel) {
+            // log.info("sendPacket - Sending packet with hash " + transactionViewModel.getHash().toString().substring(0, 10) +
+            //         " and logical clock time " + transactionViewModel.getLogicalClockTime() + " to " + neighbor.getPort() +
+            //         ". Logical Clock is currently " + LOGICAL_CLOCK_TIME + ".");
+            // set the receivedTransactionViewModel's logical clock data to our clock data before
+            // forwarding that to our neighbors if it's a new transaction
+            if (transactionViewModel.getLogicalClockTime() == 0) {
+                // log.info("sendPacket - The transaction to send was new! Setting its logical clock time to be " + LOGICAL_CLOCK_TIME);
+                transactionViewModel.setLogicalClockTime(LOGICAL_CLOCK_TIME);
+            }
+            synchronized (sendingPacket) {
+                // append TransactionViewModel to sendingPacket
+                System.arraycopy(transactionViewModel.getBytes(), 0, sendingPacket.getData(), 0, TransactionViewModel.SIZE);
+                // append hash of transactionViewModel to sendingPacket after transactionViewModel itself
+                Hash hash = transactionRequester.transactionToRequest(rnd.nextDouble() < P_SELECT_MILESTONE);
+                System.arraycopy(hash != null ? hash.bytes() : transactionViewModel.getHash().bytes(), 0,
+                        sendingPacket.getData(), TransactionViewModel.SIZE, REQUEST_HASH_SIZE);
 
+                System.arraycopy(longToBytes(transactionViewModel.getLogicalClockTime()), 0, sendingPacket.getData(),
+                        TransactionViewModel.SIZE + REQUEST_HASH_SIZE, LONG_BYTES_SIZE);
+                neighbor.send(sendingPacket);
+            }
+        }
+        
         sendPacketsCounter.getAndIncrement();
+    }
+
+    public boolean containsTransaction(Hash h) {
+        synchronized (transactions) {
+            for (Pair p : transactions) {
+                if (p.getRight().equals(h)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    public long getLogicalClockTime(Hash h) {
+        synchronized (transactions) {
+            for (Pair p : transactions) {
+                if (p.getRight().equals(h)) {
+                    return (long)p.getLeft();
+                }
+            }
+            return 0;
+        }
+    }
+
+    public void printTransactionOrdering() {
+        synchronized (transactions) {
+            // sort by logical timestamp, if timestamps are the same sort by hash value
+            Collections.sort(transactions, new Comparator() {
+                public int compare(Object o1, Object o2) {
+                    Pair<Long, Hash> p1 = (Pair<Long, Hash>)o1;
+                    Pair<Long, Hash> p2 = (Pair<Long, Hash>)o2;
+                    if (p1.getLeft() != p2.getLeft()) {
+                        return p1.getLeft().compareTo(p2.getLeft());
+                    } else {
+                        return p1.getRight().compareTo(p2.getRight());
+                    }
+                }
+            });
+            log.info("Transactions array is now:");
+            for (Pair p : transactions) {
+                log.info("[" + p.getLeft() + ", " + p.getRight().toString().substring(0, 10) + "]");
+            }
+        }
     }
 
     private Runnable spawnBroadcasterThread() {
@@ -497,14 +611,22 @@ public class Node {
                 try {
                     final TransactionViewModel transactionViewModel = broadcastQueue.pollFirst();
                     if (transactionViewModel != null) {
-
+                        // If a wallet has given us a new transaction that we need to broadcast, add it to our transactions
+                        // list
+                        if (!containsTransaction(transactionViewModel.getHash())) {
+                            synchronized (transactions) {
+                                transactions.add(new ImmutablePair<>(LOGICAL_CLOCK_TIME, transactionViewModel.getHash()));
+                            }
+                        }
                         for (final Neighbor neighbor : neighbors) {
                             try {
                                 sendPacket(sendingPacket, transactionViewModel, neighbor);
                             } catch (final Exception e) {
-                                // ignore
+                                log.error("Error in spawnBroadcasterThread sending packet.");
                             }
                         }
+                        printTransactionOrdering();
+                        LOGICAL_CLOCK_TIME += 1L;
                     }
                     Thread.sleep(PAUSE_BETWEEN_TRANSACTIONS);
                 } catch (final Exception e) {
@@ -538,10 +660,11 @@ public class Node {
                                 getReceiveQueueSize(), getBroadcastQueueSize(),
                                 transactionRequester.numberOfTransactionsToRequest(), getReplyQueueSize(),
                                 TransactionViewModel.getNumberOfStoredTransactions(tangle));
-                        log.info("toProcess = {} , toBroadcast = {} , toRequest = {} , toReply = {} / totalTransactions = {}",
+                        log.info("toProcess = {} , toBroadcast = {} , toRequest = {} , toReply = {} / totalTransactions = {}, " +
+                                "logicalClockTime = {}",
                                 getReceiveQueueSize(), getBroadcastQueueSize(),
                                 transactionRequester.numberOfTransactionsToRequest(), getReplyQueueSize(),
-                                TransactionViewModel.getNumberOfStoredTransactions(tangle));
+                                TransactionViewModel.getNumberOfStoredTransactions(tangle), LOGICAL_CLOCK_TIME);
                     }
 
                     Thread.sleep(5000);
@@ -772,4 +895,21 @@ public class Node {
         }
     }
 
+    public byte[] longToBytes(long l) {
+        byte[] result = new byte[8];
+        for (int i = 7; i >= 0; i--) {
+            result[i] = (byte)(l & 0xFF);
+            l >>= 8;
+        }
+        return result;
+    }
+
+    public long bytesToLong(byte[] b) {
+        long result = 0;
+        for (int i = 0; i < 8; i++) {
+            result <<= 8;
+            result |= (b[i] & 0xFF);
+        }
+        return result;
+    }
 }
